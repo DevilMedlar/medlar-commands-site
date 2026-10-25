@@ -42,6 +42,7 @@
             <option>vip</option>
           </select>
         </div>
+        <p id="status" role="status">Loading catalog.</p>
         <div id="grid" class="grid"></div>
         <div id="empty" class="empty" style="display:none">No commands match your filters.</div>
         <p style="margin-top:18px; font-size:12px; color:#8fa1b5">Source: <a href="commands.json">commands.json</a></p>
@@ -61,40 +62,64 @@
           const desc = (cmd.description||'').toLowerCase();
           const usage = (cmd.usage||'').toLowerCase();
           const text = name + ' ' + desc + ' ' + usage;
-          const roleOk = !state.role || (cmd.allowed_roles||[]).includes(state.role);
+          const roles = cmd.allowed_roles;
+          const roleOk = !state.role || state.role === 'pilot' || roles.includes('everybody') || roles.includes(state.role);
           const queryOk = !state.q || text.includes(state.q);
           return roleOk && queryOk;
         }
 
         function render() {
           const list = state.commands.filter(matches);
-          grid.innerHTML = '';
-          if (!list.length) { empty.style.display = 'block'; return; } else { empty.style.display = 'none'; }
+          grid.replaceChildren();
+          empty.style.display = list.length ? 'none' : 'block';
           for (const c of list) {
-            const roles = (c.allowed_roles||[]).map(r => `<span class="badge">${r}</span>`).join(' ');
             const card = document.createElement('div');
             card.className = 'card';
-            card.innerHTML = `
-              <div class="name">!${c.name}</div>
-              <div class="roles">${roles || '<span class="badge">everybody</span>'}</div>
-              ${c.description ? `<div class="desc">${c.description}</div>` : ''}
-              ${c.usage ? `<div class="usage"><strong>Usage:</strong> ${c.usage}</div>` : ''}
-              ${c.response ? `<div class="response"><strong>Response:</strong> ${c.response}</div>` : ''}
-            `;
+            // Configuration and examples are text, including literal <lang>/<text>.
+            function field(className, text) {
+              const node = document.createElement('div');
+              node.className = className;
+              node.textContent = text;
+              card.appendChild(node);
+            }
+            field('name', '!' + c.name);
+            field('roles', c.allowed_roles.join(', '));
+            if (!c.implemented) field('badge', 'Unavailable');
+            if (c.requirements) field('desc', c.requirements);
+            if (c.description) field('desc', c.description);
+            if (c.usage) field('usage', 'Usage: ' + c.usage);
+            if (c.response) field('response', 'Configured response/example: ' + c.response);
             grid.appendChild(card);
           }
+        }
+
+        function validCatalog(value) {
+          if (!value || !Array.isArray(value.commands)) return false;
+          const names = new Set();
+          return value.commands.every(c => {
+            if (!c || typeof c.name !== 'string' || !c.name || names.has(c.name)) return false;
+            names.add(c.name);
+            return ['description', 'usage', 'response', 'requirements'].every(k => typeof c[k] === 'string') &&
+              typeof c.implemented === 'boolean' && Array.isArray(c.allowed_roles) &&
+              c.allowed_roles.every(r => typeof r === 'string');
+          });
         }
 
         async function refetch() {
           try {
             const r = await fetch('commands.json', {cache:'no-store'});
+            if (!r.ok) throw new Error('HTTP status');
             const j = await r.json();
-            const next = j.commands || [];
+            if (!validCatalog(j)) throw new Error('Catalog schema');
+            const next = j.commands;
             const prev = state.commands;
             const changed = prev.length !== next.length ||
               prev.some((c, i) => !next[i] || next[i].name !== c.name || JSON.stringify(next[i]) !== JSON.stringify(c));
             if (changed) { state.commands = next; render(); }
-          } catch (e) {}
+            document.getElementById('status').textContent = 'Catalog loaded; availability reflects implemented dispatch, not live service readiness.';
+          } catch (e) {
+            document.getElementById('status').textContent = 'Catalog refresh failed. Showing the last successfully loaded catalog, if any.';
+          }
         }
 
         refetch();
